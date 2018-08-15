@@ -1,7 +1,7 @@
+from scrapy import signals
 import scrapy
+import json
 import re
-from instagram.helpers import parse_to_json
-
 
 
 class UserSpider(scrapy.Spider):
@@ -11,14 +11,14 @@ class UserSpider(scrapy.Spider):
     start_urls = ['https://www.instagram.com/{}/'.format(user) 
         for user in already_seen_users]
 
-    MAX_REQUESTS = 10
-    num_requests = 0
+    custom_settings = {
+        "CONCURRENT_REQUESTS_PER_DOMAIN" : 1,
+        "CONCURRENT_REQUESTS" : 1,
+        "CLOSESPIDER_PAGECOUNT" : 10000,
+    }
 
     def parse(self, response):
-        self.num_requests += 1
-        if self.num_requests > self.MAX_REQUESTS:
-            return None 
-        json_data = parse_to_json(response)
+        json_data = self.parse_to_json(response)
         # Will be false if it is not a tag page
         is_tag = re.search(r"com\/explore\/tags\/", response.url)
         if is_tag:
@@ -26,8 +26,8 @@ class UserSpider(scrapy.Spider):
         else:
             media = self.parse_user(json_data)
         if media:
-            hashtags, linked_users = self.extract_tags_and_users(media)
-            print(hashtags, linked_users)
+            captions, hashtags, linked_users = self.extract_captions_tags_and_users(media)
+            self.write_to_file(captions, hashtags)
 
             # Propogate
             for sub_list in hashtags:
@@ -55,7 +55,7 @@ class UserSpider(scrapy.Spider):
         end_cursor, media = self.unpack_hashtag(hashtag)
         return media
 
-    def extract_tags_and_users(self, media):
+    def extract_captions_tags_and_users(self, media):
         # Unpacks each post the user has on the front page of their profile
         captions = list(map(self.unpack_post, media))
         # Extracts all the hashtags from a post, we only want ones with one more tags, because word embeddings
@@ -63,11 +63,12 @@ class UserSpider(scrapy.Spider):
         linked_users = self.nonzero_set_map(self.extract_users, captions)
         # Join linked_users into one because grouping doesnt matter for them
         linked_users = sum(linked_users, [])
-        return hashtags, linked_users
+        return captions, hashtags, linked_users
 
     # Applies a filter and map and returns all nonezero items from the list without repetitions
     def nonzero_set_map(self, fn, iterable):
-        nonzero_map = list(filter(lambda x : len(x) > 1, map(fn, iterable)))
+        #nonzero_map = list(filter(lambda x : len(x) > 1, map(fn, iterable)))
+        nonzero_map = list(map(fn, iterable))
         # Remove repeats
         return list(map(lambda x : list(set(x)), nonzero_map))
 
@@ -82,13 +83,59 @@ class UserSpider(scrapy.Spider):
         return ""
 
     def extract_tags(self, caption):
-        return re.findall(r"#(.+?)(?:$| |\n|[@,\/#!$%\^&\*;:{}=\`~()])", caption)
+        return re.findall(r"#(.+?)(?:$| |\n|[@.,\/#!$%\^&\*;:{}=\`~()])", caption)
 
     def unpack_hashtag(self, hashtag):
         tag = hashtag["name"]
         end_cursor = hashtag["edge_hashtag_to_media"]["page_info"]["end_cursor"]
         media = hashtag["edge_hashtag_to_media"]["edges"]
         return end_cursor, media
+
+    def parse_to_json(self, response, write_to_file=False):
+        # First script object will always be the json datas
+        json_data = response.xpath("/html/body/script[1]/text()").extract_first()
+        # Cut off the emoji shit
+        json_data = json_data.replace("\\u", "u")
+        # Cut off the 'window._sharedData = '
+        json_data = json_data[21:]
+        # Cut off the ending semicolon
+        json_data = json_data[:len(json_data) - 1]
+
+        if write_to_file:
+            with open("json_data.txt", "w") as f:
+                f.write(json_data)
+        json_data = json.loads(json_data)
+        assert json_data is not None
+        return json_data
+
+    def write_to_file(self, captions, hashtags):
+        string_to_write = ""
+        for i in range(len(captions)):
+            if hashtags[i]:
+                string_to_write += captions[i] + "\t" + ",".join(hashtags[i]) + "\n"
+        self.file.write(string_to_write)
+
+
+
+    @classmethod
+    def from_crawler(cls, crawler, *args, **kwargs):
+        spider = super(UserSpider, cls).from_crawler(crawler, *args, **kwargs)
+        crawler.signals.connect(spider.spider_closed, signal=signals.spider_closed)
+        crawler.signals.connect(spider.spider_opened, signal=signals.spider_opened)
+        return spider
+
+    def spider_opened(self, spider):
+        self.file = open("tags_for_embedding.txt", "a")
+
+    def spider_closed(self, spider):
+        self.file.close()
+
+
+
+
+
+
+
 
 
     # Useless for word embeddings but I was bored.
