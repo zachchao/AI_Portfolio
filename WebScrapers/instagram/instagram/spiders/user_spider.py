@@ -2,20 +2,45 @@ from scrapy import signals
 import scrapy
 import json
 import re
+import hashlib
+import urllib
 
 
 class UserSpider(scrapy.Spider):
     name = "instagram_users_and_tags"
+    base_url = 'https://www.instagram.com'
     already_seen_users = {"instagram", "beyonce", "nike"}
     already_seen_tags = set()
     start_urls = ['https://www.instagram.com/{}/'.format(user) 
         for user in already_seen_users]
 
+    # So we dont get blocked by instagram
     custom_settings = {
         "CONCURRENT_REQUESTS_PER_DOMAIN" : 1,
         "CONCURRENT_REQUESTS" : 1,
-        "CLOSESPIDER_PAGECOUNT" : 10000,
+        "CLOSESPIDER_PAGECOUNT" : 25000,
     }
+
+    # How many posts to request each time we scroll down
+    num_to_request = 25
+    # How deep to go when scrolling
+    depth = 10
+    # These are always the same and getting them is a pain so... hardcoded
+    user_query_hash = 'e7e2f4da4b02303f74f0841279e52d76'
+    tag_query_hash = 'faa8d9917120f16cec7debbd3f16929d'
+    rhx_gis = "6941971af67abc688afa564b573977e9"
+    # For some reason I cant use string formatting on this.
+    user_variables = lambda user_id, end_cursor : '{"id":"' + user_id + '","first":' + num_to_request + ',"after":"' + end_cursor + '"}'
+    tag_variables = lambda tag, end_cursor : '{"tag_name":"' + tag + '","first":' + num_to_request + ',"after":"' + end_cursor + '"}'
+    user_url_suffix = urllib.parse.urlencode({
+        'query_hash' : user_query_hash,
+        'variables' : user_variables
+        })
+    tag_url_suffix = urllib.parse.urlencode({
+        'query_hash' : tag_query_hash,
+        'variables' : tag_query_hash
+        })
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36'
 
     def parse(self, response):
         json_data = self.parse_to_json(response)
@@ -29,20 +54,20 @@ class UserSpider(scrapy.Spider):
             captions, hashtags, linked_users = self.extract_captions_tags_and_users(media)
             self.write_to_file(captions, hashtags)
 
-            # Propogate
+            # Propagate
             for sub_list in hashtags:
                 # TO DO :
                 # Throw this to the pipeline as this is the vector to run word embeddings on
                 for tag in sub_list:
                     if tag not in self.already_seen_tags:
                         self.already_seen_tags.add(tag)
-                        url = 'https://www.instagram.com/explore/tags/{}/'.format(tag)
+                        url = '{}/explore/tags/{}/'.format(self.base_url, tag)
                         yield scrapy.Request(url=url, callback=self.parse)
 
             for user in linked_users:
                 if user not in self.already_seen_users:
                     self.already_seen_users.add(user)
-                    url = 'https://www.instagram.com/{}/'.format(user) 
+                    url = '{}/{}/'.format(self.base_url, user) 
                     yield scrapy.Request(url=url, callback=self.parse)
 
     def parse_user(self, json_data):
@@ -95,7 +120,7 @@ class UserSpider(scrapy.Spider):
         # First script object will always be the json datas
         json_data = response.xpath("/html/body/script[1]/text()").extract_first()
         # Cut off the emoji shit
-        json_data = json_data.replace("\\u", "u")
+        json_data = re.sub("\\\\u....", "", json_data)
         # Cut off the 'window._sharedData = '
         json_data = json_data[21:]
         # Cut off the ending semicolon
@@ -125,9 +150,9 @@ class UserSpider(scrapy.Spider):
         return spider
 
     def spider_opened(self, spider):
-        self.file = open("tags_for_embedding.txt", "a")
+        self.file = open("tags_for_embedding2.txt", "a")
 
-    def spider_closed(self, spider):
+    def spider_closed(self, spider):        
         self.file.close()
 
 

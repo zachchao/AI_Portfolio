@@ -1,0 +1,2 @@
+model_checkpoint_path: "C:\\Users\\zachc\\Desktop\\AI_Portfolio\\WordEmbeddings\\log\\model.ckpt"
+all_model_checkpoint_paths: "C:\\Users\\zachc\\Desktop\\AI_Portfolio\\WordEmbeddings\\log\\model.ckpt"
